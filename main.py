@@ -40,7 +40,7 @@ class WarmupScheduler:
             pg['lr'] = lr
 
 def load_data():
-    train_raw = load_dataset("wmt19", "de-en", split="train[:1000000]")
+    train_raw = load_dataset("wmt19", "de-en", split="train[:100000]")
     test = load_dataset("wmt19", "de-en", split="validation")
     split = test.train_test_split(test_size=0.5, seed=42)
     dev_raw = split["train"]
@@ -58,16 +58,19 @@ def load_tokenizer():
 
 def encode_data(data, tok, max_len=256):
     X, Y_input, Y_output = [], [], []
+    BOS = tok.bos_token_id
     EOS = tok.eos_token_id
 
     for item in tqdm(data):
         src = item['translation']['de']
         tgt = item['translation']['en']
-        src_enc = tok.encode(src)[:max_len] 
-        X.append(src_enc)
-        tgt_enc = tok.encode(tgt, add_special_tokens=False)[:max_len-1] + [EOS]
-        Y_input.append([EOS] + tgt_enc[:-1])
-        Y_output.append(tgt_enc)
+        src_enc = tok.encode(src, add_special_tokens=False)
+        X.append([BOS] + src_enc[:max_len-2] + [EOS])
+
+        tgt_enc = tok.encode(tgt, add_special_tokens=False)
+        Y = [BOS] + tgt_enc[:max_len-2] + [EOS]
+        Y_input.append(Y[:-1])
+        Y_output.append(Y[1:])
     return X, Y_input, Y_output
 
 def collate_fn(batch):
@@ -94,6 +97,7 @@ def inference(text, model, tok, max_len, device):
     model.eval()
 
     with torch.no_grad():
+        bos_id = tok.bos_token_id
         eos_id = tok.eos_token_id
         src = tok.encode(text)[:max_len]
         src = torch.tensor(src).unsqueeze(0).to(device)
@@ -103,7 +107,7 @@ def inference(text, model, tok, max_len, device):
         enc_out = model.enc(src, src_mask)
 
         # decoding
-        tgt = torch.tensor([[tok.eos_token_id]]).to(device)
+        tgt = torch.tensor([[bos_id]]).to(device)
 
         for _ in range(max_len):
             tgt_mask = make_pad_mask(tgt, tok.pad_token_id)
@@ -123,6 +127,8 @@ if __name__ == "__main__":
     
     train_raw, dev_raw, test_raw = load_data()
     tok = load_tokenizer()
+    special_tokens_dict = {'bos_token': '[BOS]', 'eos_token': '[EOS]', 'pad_token': '[PAD]'}
+    num_added_toks = tok.add_special_tokens(special_tokens_dict)
     PAD_ID = tok.pad_token_id
     # training set
     trainset, trainloader = set_and_loader(train_raw, tok, BATCH_SIZE)
