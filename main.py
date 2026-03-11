@@ -178,7 +178,6 @@ if __name__ == "__main__":
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             scheduler.step()
 
