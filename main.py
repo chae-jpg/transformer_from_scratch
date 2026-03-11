@@ -162,7 +162,8 @@ if __name__ == "__main__":
         model.train()
         total_loss = 0
         # training loop
-        for i, (x, y_in, y_out) in tqdm(enumerate(trainloader)):
+        pbar = tqdm(enumerate(trainloader), total=len(trainloader))
+        for i, (x, y_in, y_out) in pbar:
             x = x.to(device)
             y_in = y_in.to(device)
             y_out = y_out.to(device)
@@ -184,8 +185,7 @@ if __name__ == "__main__":
             total_loss += loss.item()
             
             if i % 100 == 0:
-                print(f'Epoch {epoch+1}, step {i+1}, step loss: {(total_loss / (i+1)):.4f}')
-
+                pbar.set_postfix(loss=f"{total_loss / (i+1):.4f}")
         avg_loss = total_loss / len(trainloader) 
         
         print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}')
