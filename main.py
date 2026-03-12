@@ -62,7 +62,7 @@ def encode_data(data, tok, max_len=256):
     BOS = tok.bos_token_id
     EOS = tok.eos_token_id
 
-    for item in tqdm(data):
+    for item in tqdm(data, desc="encoding"):
         src = item['translation']['de']
         tgt = item['translation']['en']
         src_enc = tok.encode(src, add_special_tokens=False)
@@ -188,7 +188,7 @@ if __name__ == "__main__":
     model.train()
     for epoch in range(NUM_EPOCHS):
         total_loss = 0
-        for chunk_start in range(0, 100_000, chunk_size):
+        for chunk_start in range(0, 5_000_000, chunk_size):
             if not_improved == EARLY_STOPPING:
                 break
             chunk = load_dataset("wmt19", "de-en", split=f"train[{chunk_start}:{chunk_start+chunk_size}]")
@@ -247,7 +247,8 @@ if __name__ == "__main__":
                         "val/loss": avg_eval_loss,
                     })                                                                 
                     wandb.run.summary["best_loss"] = min_loss
-                    if avg_eval_loss < min_loss:         
+                    if avg_eval_loss < min_loss:  
+                        not_improved = 0       
                         min_loss = avg_eval_loss
                         torch.save(model.state_dict(), 'weights.pth')
                         print("best model saved!")

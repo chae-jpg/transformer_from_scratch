@@ -154,7 +154,7 @@ if __name__ == "__main__":
     avg_test_loss = test_loss / len(testloader) 
     perplexity = math.exp(avg_test_loss)
 
-    for item in tqdm(test_raw.select(range(10))):
+    for item in tqdm(test_raw):
         src = item['translation']['de']
         tgt = item['translation']['en']
         model.eval()
