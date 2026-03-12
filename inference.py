@@ -76,6 +76,63 @@ def set_and_loader(data, tok, batch_size):
     dataset = TransDataset(X, Y_in, Y_out)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     return dataset, dataloader
+def inference_beam_search(text, model, tok, max_len, device, beam_size=5):
+    model.eval()
+    bos_id = tok.bos_token_id
+    eos_id = tok.eos_token_id
+    pad_id = tok.pad_token_id
+
+    with torch.no_grad():
+        # 1. Source Encoding (한 번만 수행)
+        src_enc = tok.encode(text, add_special_tokens=False)
+        src = [bos_id] + src_enc[:max_len-2] + [eos_id]
+        src = torch.tensor(src).unsqueeze(0).to(device)
+        src_mask = make_pad_mask(src, pad_id)
+        enc_out = model.enc(src, src_mask)
+
+        # 2. Beam 초기화: (확률 합, 현재 시퀀스 리스트)
+        # 로그 확률을 더하는 방식(log_softmax)을 써서 수치적 안정성을 확보함
+        beams = [(0.0, [bos_id])]
+
+        for _ in range(max_len):
+            new_beams = []
+            
+            for score, seq in beams:
+                # 이미 EOS를 만난 시퀀스는 더 이상 확장하지 않고 유지
+                if seq[-1] == eos_id:
+                    new_beams.append((score, seq))
+                    continue
+                
+                # 현재 시퀀스로 다음 토큰 예측
+                tgt = torch.tensor([seq]).to(device)
+                tgt_mask = make_pad_mask(tgt, pad_id)
+                dec_out = model.dec(tgt, enc_out, src_mask, tgt_mask)
+                
+                # 마지막 타임스텝의 로짓에 log_softmax 적용
+                logits = model.fc(dec_out[:, -1, :])
+                log_probs = F.log_softmax(logits, dim=-1)
+                
+                # 상위 beam_size개의 후보 추출
+                topk_probs, topk_ids = log_probs.topk(beam_size)
+                
+                for i in range(beam_size):
+                    next_score = score + topk_probs[0, i].item()
+                    next_seq = seq + [topk_ids[0, i].item()]
+                    new_beams.append((next_score, next_seq))
+            
+            # 모든 후보 중 전체 점수가 높은 상위 beam_size개만 남김
+            # 문장 길이에 따른 페널티를 주지 않으면 짧은 문장이 유리하므로 간단한 길이 정규화 적용 가능
+            # 여기서는 단순히 점수 순으로 정렬
+            beams = sorted(new_beams, key=lambda x: x[0], reverse=True)[:beam_size]
+            
+            # 모든 Beam이 EOS로 끝났다면 조기 종료
+            if all(seq[-1] == eos_id for _, seq in beams):
+                break
+        
+        # 최종적으로 점수가 가장 높은 시퀀스 선택
+        best_seq = beams[0][1]
+        result = tok.decode(best_seq, skip_special_tokens=True)
+        return result
 
 def inference(text, model, tok, max_len, device):
     model.eval()
@@ -134,36 +191,44 @@ if __name__ == "__main__":
     ).to(device)
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID)
 
-    model.load_state_dict(torch.load('weights.pth')) 
+    model.load_state_dict(torch.load('best_model.pth')) 
     # evaluation
     test_loss = 0
     pred, target = [], []   
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID, reduction='sum') # 'sum'으로 변경
+    total_test_loss = 0
+    total_tokens = 0
+
     model.eval()
     with torch.no_grad():
         for x, y_in, y_out in tqdm(testloader):
-            x = x.to(device)
-            y_in = y_in.to(device)
-            y_out = y_out.to(device)
-
-            # Forward pass
+            x, y_in, y_out = x.to(device), y_in.to(device), y_out.to(device)
+            
             src_mask = make_pad_mask(x, PAD_ID)
             tgt_mask = make_pad_mask(y_in, PAD_ID)
                 
-            outputs = model(x, y_in, src_mask, tgt_mask) # (batch_size, seq_len, vocab_size)
-            outputs = outputs.view(-1, VOCAB_SIZE) # (batch_size * seq_len, vocab_size)
+            outputs = model(x, y_in, src_mask, tgt_mask)
+            outputs = outputs.view(-1, VOCAB_SIZE)
             y_out = y_out.view(-1)
+            
+            # 패딩이 아닌 토큰의 개수 계산
+            num_tokens = (y_out != PAD_ID).sum().item()
+            
+            # reduction='sum'이므로 이 배치의 전체 손실 합이 나옴
             loss = criterion(outputs, y_out)
 
-            test_loss += loss.item()
+            total_test_loss += loss.item()
+            total_tokens += num_tokens
 
-    avg_test_loss = test_loss / len(testloader) 
+    # 전체 토큰 대비 평균 손실 계산
+    avg_test_loss = total_test_loss / total_tokens
     perplexity = math.exp(avg_test_loss)
 
     for item in tqdm(test_raw):
         src = item['translation']['de']
         tgt = item['translation']['en']
         model.eval()
-        pred.append(inference(src, model, tok, MAX_LEN, device))
+        pred.append(inference_beam_search(src, model, tok, MAX_LEN, device))
         target.append(tgt)
 
     bleu = corpus_bleu(pred, [target]).score

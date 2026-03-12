@@ -125,7 +125,7 @@ def inference(text, model, tok, max_len, device):
 
 if __name__ == "__main__":
     MAX_LEN = 256
-    BATCH_SIZE = 32
+    BATCH_SIZE = 128
     
     dev_raw, test_raw = load_data()
     tok = load_tokenizer()
@@ -183,21 +183,21 @@ if __name__ == "__main__":
     min_loss = 1e9
     save_interval = 500
     current_step = 0
-    chunk_size = 100_000
+    chunk_size = 50_000
 
     model.train()
     for epoch in range(NUM_EPOCHS):
         total_loss = 0
         for chunk_start in range(0, 5_000_000, chunk_size):
-            if not_improved == EARLY_STOPPING:
-                break
+            # if not_improved == EARLY_STOPPING:
+                # break
             chunk = load_dataset("wmt19", "de-en", split=f"train[{chunk_start}:{chunk_start+chunk_size}]")
             _, trainloader = set_and_loader(chunk, tok, BATCH_SIZE, True)
             pbar = tqdm(enumerate(trainloader), total=len(trainloader))
         
             for i, (x, y_in, y_out) in pbar:
-                if not_improved == EARLY_STOPPING:
-                    break
+                # if not_improved == EARLY_STOPPING:
+                    # break
                 x, y_in, y_out = x.to(device), y_in.to(device), y_out.to(device)
                 src_mask = make_pad_mask(x, PAD_ID)
                 tgt_mask = make_pad_mask(y_in, PAD_ID)
@@ -207,7 +207,6 @@ if __name__ == "__main__":
                 
                 optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 scheduler.step() # 주의: scheduler 내부에서 optimizer.step() 호출됨
                 
                 current_loss = loss.item()
