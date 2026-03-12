@@ -34,7 +34,6 @@ class EncoderBlock(nn.Module):
 
         x2 = self.ff1(x)
         x2 = self.act(x2)
-        x2 = self.dropout(x2)
         x2 = self.ff2(x2)
         x = x + self.dropout(x2)
         x = self.ln2(x)
@@ -50,10 +49,9 @@ class Encoder(nn.Module):
         pos = torch.zeros(max_len, d_model)
         pos = pos_encoder(pos, max_len, d_model)
         self.register_buffer("pos", pos)
-        self.dropout = nn.Dropout(dropout)
         self.d_model = d_model
     def forward(self, x, pad_mask):
-        x = self.dropout(self.embedding(x)* (self.d_model ** 0.5) + self.pos[:x.size(1), :])
+        x = self.embedding(x)* (self.d_model ** 0.5) + self.pos[:x.size(1), :]
         for block in self.blocks:
             x = block(x, pad_mask)
         
@@ -71,15 +69,12 @@ class DecoderBlock(nn.Module):
         self.ln3 = nn.LayerNorm(d_model)
         self.act = nn.ReLU()
 
-        self.register_buffer("mask", torch.triu(torch.ones(max_len, max_len), diagonal=1).bool())
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, y, src_mask, tgt_mask):
+    def forward(self, x, y, src_mask, comb_mask):
         # x: batch_size x seq_len
-        causal = self.mask[:x.size(1), :x.size(1)].unsqueeze(0).unsqueeze(0)
-        comb = causal | tgt_mask
         # masked multi-head attention
-        x2 = self.attn1(x, x, x, comb)
+        x2 = self.attn1(x, x, x, comb_mask)
         x = x + self.dropout(x2)
         x = self.ln1(x)
 
@@ -109,12 +104,16 @@ class Decoder(nn.Module):
         pos = torch.zeros(max_len, d_model)
         pos = pos_encoder(pos, max_len, d_model)
         self.register_buffer("pos", pos)
+        self.register_buffer("mask", torch.triu(torch.ones(max_len, max_len), diagonal=1).bool())
         self.dropout = nn.Dropout(dropout)
         self.d_model = d_model
     def forward(self, x, y, src_mask, tgt_mask):
-        x = self.dropout(self.embedding(x) * (self.d_model ** 0.5)+ self.pos[:x.size(1), :])
+        causal = self.mask[:x.size(1), :x.size(1)].unsqueeze(0).unsqueeze(0)
+        comb = causal | tgt_mask
+
+        x = self.embedding(x) * (self.d_model ** 0.5)+ self.pos[:x.size(1), :]
         for block in self.blocks:
-            x = block(x, y, src_mask, tgt_mask)
+            x = block(x, y, src_mask, comb)
         return x
 
 class Transformer(nn.Module):
