@@ -42,7 +42,6 @@ class WarmupScheduler:
         self.optimizer.step()
 
 def load_data():
-    train_raw = load_dataset("wmt19", "de-en", split="train[:5_000_000]")
     test = load_dataset("wmt19", "de-en", split="validation")
     split = test.train_test_split(test_size=0.5, seed=42)
     dev_raw = split["train"]
@@ -50,7 +49,7 @@ def load_data():
 
     print("====Data succesfully loaded!====")
 
-    return train_raw, dev_raw, test_raw
+    return dev_raw, test_raw
 
 def load_tokenizer():
     tok = AutoTokenizer.from_pretrained("Helsinki-NLP/opus-mt-de-en")
@@ -128,13 +127,12 @@ if __name__ == "__main__":
     MAX_LEN = 256
     BATCH_SIZE = 32
     
-    train_raw, dev_raw, test_raw = load_data()
+    dev_raw, test_raw = load_data()
     tok = load_tokenizer()
     special_tokens_dict = {'bos_token': '[BOS]', 'eos_token': '[EOS]', 'pad_token': '[PAD]'}
     num_added_toks = tok.add_special_tokens(special_tokens_dict)
     PAD_ID = tok.pad_token_id
-    # training set
-    trainset, _ = set_and_loader(train_raw, tok, BATCH_SIZE, True)
+
     # dev set
     devset, devloader = set_and_loader(dev_raw, tok, BATCH_SIZE, False)
     # test set
@@ -152,7 +150,8 @@ if __name__ == "__main__":
 
     LR = 0.5
     NUM_EPOCHS = 1
-    
+    EARLY_STOPPING = 5
+    not_improved = 0
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = Transformer(
@@ -189,12 +188,16 @@ if __name__ == "__main__":
     model.train()
     for epoch in range(NUM_EPOCHS):
         total_loss = 0
-        for chunk_start in range(0, 5_000_000, chunk_size):
+        for chunk_start in range(0, 100_000, chunk_size):
+            if not_improved == EARLY_STOPPING:
+                break
             chunk = load_dataset("wmt19", "de-en", split=f"train[{chunk_start}:{chunk_start+chunk_size}]")
-            _, trainloader = set_and_loader(chunk, tok, BATCH_SIZE)
+            _, trainloader = set_and_loader(chunk, tok, BATCH_SIZE, True)
             pbar = tqdm(enumerate(trainloader), total=len(trainloader))
         
             for i, (x, y_in, y_out) in pbar:
+                if not_improved == EARLY_STOPPING:
+                    break
                 x, y_in, y_out = x.to(device), y_in.to(device), y_out.to(device)
                 src_mask = make_pad_mask(x, PAD_ID)
                 tgt_mask = make_pad_mask(y_in, PAD_ID)
@@ -204,7 +207,6 @@ if __name__ == "__main__":
                 
                 optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 scheduler.step() # 주의: scheduler 내부에서 optimizer.step() 호출됨
                 
                 current_loss = loss.item()
@@ -248,10 +250,13 @@ if __name__ == "__main__":
                     if avg_eval_loss < min_loss:         
                         min_loss = avg_eval_loss
                         torch.save(model.state_dict(), 'weights.pth')
+                        print("best model saved!")
+                    else:
+                        not_improved += 1
                     model.train()
                 if i % 100 == 0:
                     pbar.set_postfix(loss=f"{total_loss / (current_step):.4f}")
-                avg_loss = total_loss / len(trainloader)        
+            avg_loss = total_loss / current_step      
         print(f'Epoch [{epoch+1}/{NUM_EPOCHS}], Loss: {avg_loss:.4f}')
 
         # evaluation

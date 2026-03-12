@@ -106,6 +106,8 @@ if __name__ == "__main__":
     _, _, test_raw = load_data()
     
     tok = load_tokenizer()
+    special_tokens_dict = {'bos_token': '[BOS]', 'eos_token': '[EOS]', 'pad_token': '[PAD]'}
+    num_added_toks = tok.add_special_tokens(special_tokens_dict)
     PAD_ID = tok.pad_token_id
     testset, testloader = set_and_loader(test_raw, tok, BATCH_SIZE)
     
