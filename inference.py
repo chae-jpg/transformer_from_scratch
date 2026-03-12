@@ -47,16 +47,19 @@ def load_data():
 
 def encode_data(data, tok, max_len=256):
     X, Y_input, Y_output = [], [], []
+    BOS = tok.bos_token_id
     EOS = tok.eos_token_id
 
-    for item in tqdm(data):
+    for item in tqdm(data, desc="encoding"):
         src = item['translation']['de']
         tgt = item['translation']['en']
-        src_enc = tok.encode(src)[:max_len] 
-        X.append(src_enc)
-        tgt_enc = tok.encode(tgt)[:max_len]
-        Y_input.append([EOS] + tgt_enc[:-1])
-        Y_output.append(tgt_enc)
+        src_enc = tok.encode(src, add_special_tokens=False)
+        X.append([BOS] + src_enc[:max_len-2] + [EOS])
+
+        tgt_enc = tok.encode(tgt, add_special_tokens=False)
+        Y = [BOS] + tgt_enc[:max_len-2] + [EOS]
+        Y_input.append(Y[:-1])
+        Y_output.append(Y[1:])
     return X, Y_input, Y_output
 
 def collate_fn(batch):
@@ -78,8 +81,10 @@ def inference(text, model, tok, max_len, device):
     model.eval()
 
     with torch.no_grad():
+        bos_id = tok.bos_token_id
         eos_id = tok.eos_token_id
-        src = tok.encode(text)[:max_len]
+        src_enc = tok.encode(text, add_special_tokens=False)
+        src = [bos_id] + src_enc[:max_len-2] + [eos_id]
         src = torch.tensor(src).unsqueeze(0).to(device)
         
         # encoding
@@ -87,13 +92,13 @@ def inference(text, model, tok, max_len, device):
         enc_out = model.enc(src, src_mask)
 
         # decoding
-        tgt = torch.tensor([[tok.eos_token_id]]).to(device)
+        tgt = torch.tensor([[bos_id]]).to(device)
 
         for _ in range(max_len):
             tgt_mask = make_pad_mask(tgt, tok.pad_token_id)
             dec_out = model.dec(tgt, enc_out, src_mask, tgt_mask)
-            last = dec_out[:, -1, :]
-            selected = model.fc(last).argmax(dim=-1, keepdim=True)
+            last = model.fc(dec_out[:, -1, :])
+            selected = last.argmax(dim=-1, keepdim=True)
             tgt = torch.cat([tgt, selected], dim=1)
             if selected.item() == eos_id:
                 break
@@ -154,7 +159,7 @@ if __name__ == "__main__":
     avg_test_loss = test_loss / len(testloader) 
     perplexity = math.exp(avg_test_loss)
 
-    for item in tqdm(test_raw.select(range(10))):
+    for item in tqdm(test_raw):
         src = item['translation']['de']
         tgt = item['translation']['en']
         model.eval()
