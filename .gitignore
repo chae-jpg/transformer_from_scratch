@@ -11,3 +11,6 @@ wheels/
 
 # weights file
 *.pth
+
+# wandb log
+wandb/

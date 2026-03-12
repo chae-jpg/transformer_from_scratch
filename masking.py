@@ -10,7 +10,7 @@ def check_masking_logic():
     
     # 1. 가상의 입력 시퀀스 생성 (0은 패딩)
     # 예: [BOS, 단어1, 단어2, PAD, PAD]
-    tgt_seq = torch.tensor([[10, 11, 12, 0, 0]]) 
+    tgt_seq = torch.tensor([[10, 11, 12, 0, 0], [1 ,2, 3, 4, 0], [1, 0, 0, 0, 0]]) 
     
     # 2. 패딩 마스크 생성 (main.py의 make_pad_mask 방식)
     # 결과 크기: (batch, 1, 1, seq_len)

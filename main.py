@@ -10,6 +10,7 @@ from tqdm import tqdm
 import torch.optim as optim
 import math
 from sacrebleu import corpus_bleu
+from torch.utils.data import IterableDataset
 
 class TransDataset(Dataset):
     def __init__(self, X, Y_input, Y_output):
@@ -38,9 +39,10 @@ class WarmupScheduler:
         )
         for pg in self.optimizer.param_groups:
             pg['lr'] = lr
+        self.optimizer.step()
 
 def load_data():
-    train_raw = load_dataset("wmt19", "de-en", split="train[:100000]")
+    train_raw = load_dataset("wmt19", "de-en", split="train[:5_000_000]")
     test = load_dataset("wmt19", "de-en", split="validation")
     split = test.train_test_split(test_size=0.5, seed=42)
     dev_raw = split["train"]
@@ -87,10 +89,10 @@ def make_pad_mask(seq, pad_id):
     # return: batch x 1 x 1 x seq_len
     return (seq == pad_id).unsqueeze(1).unsqueeze(2)
 
-def set_and_loader(data, tok, batch_size):
+def set_and_loader(data, tok, batch_size, shuffle):
     X, Y_in, Y_out = encode_data(data, tok)
     dataset = TransDataset(X, Y_in, Y_out)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn)
     return dataset, dataloader
 
 def inference(text, model, tok, max_len, device):
@@ -99,7 +101,8 @@ def inference(text, model, tok, max_len, device):
     with torch.no_grad():
         bos_id = tok.bos_token_id
         eos_id = tok.eos_token_id
-        src = tok.encode(text)[:max_len]
+        src_enc = tok.encode(text, add_special_tokens=False)
+        src = [tok.bos_token_id] + src_enc[:max_len-2] + [tok.eos_token_id]
         src = torch.tensor(src).unsqueeze(0).to(device)
         
         # encoding
@@ -131,11 +134,11 @@ if __name__ == "__main__":
     num_added_toks = tok.add_special_tokens(special_tokens_dict)
     PAD_ID = tok.pad_token_id
     # training set
-    trainset, trainloader = set_and_loader(train_raw, tok, BATCH_SIZE)
+    trainset, _ = set_and_loader(train_raw, tok, BATCH_SIZE, True)
     # dev set
-    devset, devloader = set_and_loader(dev_raw, tok, BATCH_SIZE)
+    devset, devloader = set_and_loader(dev_raw, tok, BATCH_SIZE, False)
     # test set
-    testset, testloader = set_and_loader(test_raw, tok, BATCH_SIZE)
+    testset, testloader = set_and_loader(test_raw, tok, BATCH_SIZE, False)
 
     print("====Trainset, Devset loaded successfully!====")
 
@@ -147,8 +150,8 @@ if __name__ == "__main__":
     D_FF = 2048
     DROPOUT = 0.1
 
-    learning_rate = 0.5
-    num_epochs = 1
+    LR = 0.5
+    NUM_EPOCHS = 1
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -158,49 +161,105 @@ if __name__ == "__main__":
 
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID, label_smoothing=0.1)
     optimizer = torch.optim.Adam(
-        model.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-9
+        model.parameters(), lr=LR, betas=(0.9, 0.98), eps=1e-9
     )
     scheduler = WarmupScheduler(optimizer, D_MODEL, warmup_steps=4000)
 
     print("Start Training...")
+    import wandb
+
+    # 1. wandb 초기화
+    wandb.init(
+        project="transformer-translation",
+        config={
+            "learning_rate": LR,
+            "epochs": NUM_EPOCHS,
+            "batch_size": BATCH_SIZE,
+            "d_model": D_MODEL,
+            "warmup_steps": 4000,
+            "save_interval": 10000  # 10000 스텝마다 체크포인트 확인
+        }
+    )
+
     min_loss = 1e9
-    for epoch in range(num_epochs):
-        model.train()
+    save_interval = 500
+    current_step = 0
+    chunk_size = 100_000
+
+    model.train()
+    for epoch in range(NUM_EPOCHS):
         total_loss = 0
-        # training loop
-        pbar = tqdm(enumerate(trainloader), total=len(trainloader))
-        for i, (x, y_in, y_out) in pbar:
-            x = x.to(device)
-            y_in = y_in.to(device)
-            y_out = y_out.to(device)
-            # Forward pass
-            src_mask = make_pad_mask(x, PAD_ID)
-            tgt_mask = make_pad_mask(y_in, PAD_ID)
-            
-            outputs = model(x, y_in, src_mask, tgt_mask) # (batch_size, seq_len, vocab_size)
-            outputs = outputs.view(-1, VOCAB_SIZE) # (batch_size * seq_len, vocab_size)
-            y_out = y_out.view(-1)
-            loss = criterion(outputs, y_out)
-
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-
-            total_loss += loss.item()
-            
-            if i % 100 == 0:
-                pbar.set_postfix(loss=f"{total_loss / (i+1):.4f}")
-        avg_loss = total_loss / len(trainloader) 
+        for chunk_start in range(0, 5_000_000, chunk_size):
+            chunk = load_dataset("wmt19", "de-en", split=f"train[{chunk_start}:{chunk_start+chunk_size}]")
+            _, trainloader = set_and_loader(chunk, tok, BATCH_SIZE)
+            pbar = tqdm(enumerate(trainloader), total=len(trainloader))
         
-        print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}')
+            for i, (x, y_in, y_out) in pbar:
+                x, y_in, y_out = x.to(device), y_in.to(device), y_out.to(device)
+                src_mask = make_pad_mask(x, PAD_ID)
+                tgt_mask = make_pad_mask(y_in, PAD_ID)
+                
+                outputs = model(x, y_in, src_mask, tgt_mask)
+                loss = criterion(outputs.view(-1, VOCAB_SIZE), y_out.view(-1))
+                
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scheduler.step() # 주의: scheduler 내부에서 optimizer.step() 호출됨
+                
+                current_loss = loss.item()
+                total_loss += current_loss
+                current_step += 1
 
-        # evaluate validation loss
-        eval_loss = 0
+                # 2. wandb 로그 기록
+                wandb.log({
+                    "train/loss": current_loss,
+                    "train/avg_loss": total_loss / (current_step),
+                    "learning_rate": optimizer.param_groups[0]['lr'],
+                    "step": current_step
+                })
+
+                # 3. 일정 스텝마다 최소 Loss 갱신 및 저장
+                if current_step % save_interval == 0:
+                    eval_loss = 0
+                    model.eval()
+                    with torch.no_grad():
+                        for x, y_in, y_out in tqdm(devloader):
+                            x = x.to(device)
+                            y_in = y_in.to(device)
+                            y_out = y_out.to(device)
+
+                            # Forward pass
+                            src_mask = make_pad_mask(x, PAD_ID)
+                            tgt_mask = make_pad_mask(y_in, PAD_ID)
+                            
+                            outputs = model(x, y_in, src_mask, tgt_mask) # (batch_size, seq_len, vocab_size)
+                            outputs = outputs.view(-1, VOCAB_SIZE) # (batch_size * seq_len, vocab_size)
+                            y_out = y_out.view(-1)
+                            loss = criterion(outputs, y_out)
+
+                            eval_loss += loss.item()
+                    avg_eval_loss = eval_loss / len(devloader) 
+                    print(f'Epoch [{epoch+1}/{NUM_EPOCHS}], Validation Loss: {avg_eval_loss:.4f}')
+                    wandb.log({
+                        "val/loss": avg_eval_loss,
+                    })                                                                 
+                    wandb.run.summary["best_loss"] = min_loss
+                    if avg_eval_loss < min_loss:         
+                        min_loss = avg_eval_loss
+                        torch.save(model.state_dict(), 'weights.pth')
+                    model.train()
+                if i % 100 == 0:
+                    pbar.set_postfix(loss=f"{total_loss / (current_step):.4f}")
+                avg_loss = total_loss / len(trainloader)        
+        print(f'Epoch [{epoch+1}/{NUM_EPOCHS}], Loss: {avg_loss:.4f}')
+
+        # evaluation
+        test_loss = 0
+        pred, target = [], []   
         model.eval()
         with torch.no_grad():
-            for x, y_in, y_out in tqdm(devloader):
+            for x, y_in, y_out in tqdm(testloader):
                 x = x.to(device)
                 y_in = y_in.to(device)
                 y_out = y_out.to(device)
@@ -208,42 +267,16 @@ if __name__ == "__main__":
                 # Forward pass
                 src_mask = make_pad_mask(x, PAD_ID)
                 tgt_mask = make_pad_mask(y_in, PAD_ID)
-                
+                    
                 outputs = model(x, y_in, src_mask, tgt_mask) # (batch_size, seq_len, vocab_size)
                 outputs = outputs.view(-1, VOCAB_SIZE) # (batch_size * seq_len, vocab_size)
                 y_out = y_out.view(-1)
                 loss = criterion(outputs, y_out)
 
-                eval_loss += loss.item()
-        avg_eval_loss = eval_loss / len(devloader) 
-        print(f'Epoch [{epoch+1}/{num_epochs}], Validation Loss: {avg_eval_loss:.4f}')
-        
-        if avg_eval_loss < min_loss:
-            min_loss = avg_eval_loss
-            torch.save(model.state_dict(), 'weights.pth')
-    # evaluation
-    test_loss = 0
-    pred, target = [], []   
-    model.eval()
-    with torch.no_grad():
-        for x, y_in, y_out in tqdm(testloader):
-            x = x.to(device)
-            y_in = y_in.to(device)
-            y_out = y_out.to(device)
+                test_loss += loss.item()
 
-            # Forward pass
-            src_mask = make_pad_mask(x, PAD_ID)
-            tgt_mask = make_pad_mask(y_in, PAD_ID)
-                
-            outputs = model(x, y_in, src_mask, tgt_mask) # (batch_size, seq_len, vocab_size)
-            outputs = outputs.view(-1, VOCAB_SIZE) # (batch_size * seq_len, vocab_size)
-            y_out = y_out.view(-1)
-            loss = criterion(outputs, y_out)
-
-            test_loss += loss.item()
-
-    avg_test_loss = test_loss / len(testloader) 
-    perplexity = math.exp(avg_test_loss)
+        avg_test_loss = test_loss / len(testloader) 
+        perplexity = math.exp(avg_test_loss)
 
     for item in tqdm(test_raw.select(range(10))):
         src = item['translation']['de']

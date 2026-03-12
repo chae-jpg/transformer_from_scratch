@@ -34,6 +34,7 @@ class EncoderBlock(nn.Module):
 
         x2 = self.ff1(x)
         x2 = self.act(x2)
+        x2 = self.dropout(x2)
         x2 = self.ff2(x2)
         x = x + self.dropout(x2)
         x = self.ln2(x)
@@ -90,6 +91,7 @@ class DecoderBlock(nn.Module):
         # ff layer
         x2 = self.ff1(x)
         x2 = self.act(x2)
+        x2 = self.dropout(x2)
         x2 = self.ff2(x2)
         x = x + self.dropout(x2)
         x = self.ln3(x)
