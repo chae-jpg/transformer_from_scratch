@@ -24,6 +24,7 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, d_model=512, head=8):
         super().__init__()
 
+        self.d_model = d_model
         self.nhead = head
         self.d_k = d_model // head
 
@@ -49,7 +50,7 @@ class MultiHeadAttention(nn.Module):
 
         O = scaled_dot_product_attention(Q, K, V, mask)
         O = O.transpose(1, 2)
-        O = O.reshape(B, S, self.nhead*self.d_model)
+        O = O.reshape(B, S, self.d_model)
         O = self.W_O(O)
 
         return O
