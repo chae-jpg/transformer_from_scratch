@@ -148,7 +148,7 @@ if __name__ == "__main__":
     D_FF = 2048
     DROPOUT = 0.1
 
-    LR = 0.5
+    LR = 1e-4
     NUM_EPOCHS = 1
     EARLY_STOPPING = 5
     not_improved = 0
@@ -207,6 +207,7 @@ if __name__ == "__main__":
                 
                 optimizer.zero_grad()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 scheduler.step() # 주의: scheduler 내부에서 optimizer.step() 호출됨
                 
                 current_loss = loss.item()
