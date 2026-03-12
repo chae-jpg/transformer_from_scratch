@@ -101,7 +101,7 @@ def inference(text, model, tok, max_len, device):
         bos_id = tok.bos_token_id
         eos_id = tok.eos_token_id
         src_enc = tok.encode(text, add_special_tokens=False)
-        src = [tok.bos_token_id] + src_enc[:max_len-2] + [tok.eos_token_id]
+        src = [bos_id] + src_enc[:max_len-2] + [eos_id]
         src = torch.tensor(src).unsqueeze(0).to(device)
         
         # encoding
@@ -114,8 +114,8 @@ def inference(text, model, tok, max_len, device):
         for _ in range(max_len):
             tgt_mask = make_pad_mask(tgt, tok.pad_token_id)
             dec_out = model.dec(tgt, enc_out, src_mask, tgt_mask)
-            last = dec_out[:, -1, :]
-            selected = model.fc(last).argmax(dim=-1, keepdim=True)
+            last = model.fc(dec_out[:, -1, :])
+            selected = last.argmax(dim=-1, keepdim=True)
             tgt = torch.cat([tgt, selected], dim=1)
             if selected.item() == eos_id:
                 break
