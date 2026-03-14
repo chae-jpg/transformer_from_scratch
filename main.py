@@ -207,6 +207,7 @@ if __name__ == "__main__":
                 
                 optimizer.zero_grad()
                 loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 scheduler.step() # 주의: scheduler 내부에서 optimizer.step() 호출됨
                 
                 current_loss = loss.item()
@@ -261,8 +262,10 @@ if __name__ == "__main__":
         print(f'Epoch [{epoch+1}/{NUM_EPOCHS}], Loss: {avg_loss:.4f}')
 
         # evaluation
-        test_loss = 0
-        pred, target = [], []   
+        pred, target = [], []
+        eval_criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID, reduction='sum')
+        total_test_loss = 0
+        total_tokens = 0
         model.eval()
         with torch.no_grad():
             for x, y_in, y_out in tqdm(testloader):
@@ -273,27 +276,33 @@ if __name__ == "__main__":
                 # Forward pass
                 src_mask = make_pad_mask(x, PAD_ID)
                 tgt_mask = make_pad_mask(y_in, PAD_ID)
-                    
-                outputs = model(x, y_in, src_mask, tgt_mask) # (batch_size, seq_len, vocab_size)
-                outputs = outputs.view(-1, VOCAB_SIZE) # (batch_size * seq_len, vocab_size)
-                y_out = y_out.view(-1)
-                loss = criterion(outputs, y_out)
 
-                test_loss += loss.item()
+                outputs = model(x, y_in, src_mask, tgt_mask)
+                outputs = outputs.view(-1, VOCAB_SIZE)
+                y_out_flat = y_out.view(-1)
 
-        avg_test_loss = test_loss / len(testloader) 
+                num_tokens = (y_out_flat != PAD_ID).sum().item()
+                loss = eval_criterion(outputs, y_out_flat)
+
+                total_test_loss += loss.item()
+                total_tokens += num_tokens
+
+        avg_test_loss = total_test_loss / total_tokens
         perplexity = math.exp(avg_test_loss)
 
-    for item in tqdm(test_raw.select(range(10))):
+    # Load best model for BLEU evaluation
+    model.load_state_dict(torch.load('weights.pth'))
+    model.eval()
+
+    for item in tqdm(test_raw):
         src = item['translation']['de']
         tgt = item['translation']['en']
-        model.eval()
         pred.append(inference(src, model, tok, MAX_LEN, device))
         target.append(tgt)
 
     bleu = corpus_bleu(pred, [target]).score
 
-    print(f"Training finished. Perplexity: {perplexity}, BLEU: {bleu}")
+    print(f"Training finished. Perplexity: {perplexity:.2f}, BLEU: {bleu:.2f}")
 
     print("\n====== Sample Translations ======")
     for i in range(min(5, len(pred))):
