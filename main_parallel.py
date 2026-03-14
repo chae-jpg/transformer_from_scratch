@@ -60,18 +60,20 @@ def load_tokenizer():
 
 def encode_data(data, tok, max_len=256):
     X, Y_input, Y_output = [], [], []
+    BOS = tok.bos_token_id
     EOS = tok.eos_token_id
 
     for item in tqdm(data):
         src = item['translation']['de']
         tgt = item['translation']['en']
 
-        src_enc = tok.encode(src)[:max_len]
-        X.append(src_enc)
+        src_enc = tok.encode(src, add_special_tokens=False)
+        X.append([BOS] + src_enc[:max_len-2] + [EOS])
 
-        tgt_enc = tok.encode(tgt, add_special_tokens=False)[:max_len - 1] + [EOS]
-        Y_input.append([EOS] + tgt_enc[:-1])
-        Y_output.append(tgt_enc)
+        tgt_enc = tok.encode(tgt, add_special_tokens=False)
+        Y = [BOS] + tgt_enc[:max_len-2] + [EOS]
+        Y_input.append(Y[:-1])
+        Y_output.append(Y[1:])
 
     return X, Y_input, Y_output
 
@@ -104,11 +106,13 @@ def get_base_model(model):
 
 def inference(text, model, tok, max_len, device):
     model.eval()
-    base = get_base_model(model)  # model.module.enc 등 접근을 위해
+    base = get_base_model(model)
+    bos_id = tok.bos_token_id
     eos_id = tok.eos_token_id
 
     with torch.no_grad():
-        src = tok.encode(text)[:max_len]
+        src_enc = tok.encode(text, add_special_tokens=False)
+        src = [bos_id] + src_enc[:max_len-2] + [eos_id]
         src = torch.tensor(src).unsqueeze(0).to(device)
 
         # encoding
@@ -116,13 +120,13 @@ def inference(text, model, tok, max_len, device):
         enc_out = base.enc(src, src_mask)
 
         # decoding
-        tgt = torch.tensor([[eos_id]]).to(device)
+        tgt = torch.tensor([[bos_id]]).to(device)
 
         for _ in range(max_len):
             tgt_mask = make_pad_mask(tgt, tok.pad_token_id)
             dec_out = base.dec(tgt, enc_out, src_mask, tgt_mask)
-            last = dec_out[:, -1, :]
-            selected = base.fc(last).argmax(dim=-1, keepdim=True)
+            last = base.fc(dec_out[:, -1, :])
+            selected = last.argmax(dim=-1, keepdim=True)
             tgt = torch.cat([tgt, selected], dim=1)
             if selected.item() == eos_id:
                 break
@@ -137,6 +141,8 @@ if __name__ == "__main__":
 
     train_raw, dev_raw, test_raw = load_data()
     tok = load_tokenizer()
+    special_tokens_dict = {'bos_token': '[BOS]', 'eos_token': '[EOS]', 'pad_token': '[PAD]'}
+    tok.add_special_tokens(special_tokens_dict)
     PAD_ID = tok.pad_token_id
 
     # training set

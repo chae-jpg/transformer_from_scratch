@@ -18,7 +18,7 @@ def pos_encoder(emb, max_len, d_model):
 class EncoderBlock(nn.Module):
     def __init__(self, d_model, nhead, d_ff, dropout):
         super().__init__()
-        self.attn = attention.MultiHeadAttention(d_model=d_model, head=nhead)
+        self.attn = attention.MultiHeadAttention(d_model=d_model, head=nhead, dropout=dropout)
         self.ff1 = nn.Linear(d_model, d_ff)
         self.ff2 = nn.Linear(d_ff, d_model)
         self.ln1 = nn.LayerNorm(d_model)
@@ -26,7 +26,7 @@ class EncoderBlock(nn.Module):
         self.act = nn.ReLU()
 
         self.dropout = nn.Dropout(dropout)
-    
+
     def forward(self, x, pad_mask):
         x2 = self.attn(x, x, x, pad_mask)
         x = x + self.dropout(x2)
@@ -49,9 +49,10 @@ class Encoder(nn.Module):
         pos = torch.zeros(max_len, d_model)
         pos = pos_encoder(pos, max_len, d_model)
         self.register_buffer("pos", pos)
+        self.dropout = nn.Dropout(dropout)
         self.d_model = d_model
     def forward(self, x, pad_mask):
-        x = self.embedding(x)* (self.d_model ** 0.5) + self.pos[:x.size(1), :]
+        x = self.dropout(self.embedding(x) * (self.d_model ** 0.5) + self.pos[:x.size(1), :])
         for block in self.blocks:
             x = block(x, pad_mask)
         
@@ -60,8 +61,8 @@ class Encoder(nn.Module):
 class DecoderBlock(nn.Module):
     def __init__(self, max_len, d_model, nhead, d_ff, dropout):
         super().__init__()
-        self.attn1 = attention.MultiHeadAttention(d_model=d_model, head=nhead)
-        self.attn2 = attention.MultiHeadAttention(d_model=d_model, head=nhead)
+        self.attn1 = attention.MultiHeadAttention(d_model=d_model, head=nhead, dropout=dropout)
+        self.attn2 = attention.MultiHeadAttention(d_model=d_model, head=nhead, dropout=dropout)
         self.ff1 = nn.Linear(d_model, d_ff)
         self.ff2 = nn.Linear(d_ff, d_model)
         self.ln1 = nn.LayerNorm(d_model)
@@ -86,7 +87,6 @@ class DecoderBlock(nn.Module):
         # ff layer
         x2 = self.ff1(x)
         x2 = self.act(x2)
-        x2 = self.dropout(x2)
         x2 = self.ff2(x2)
         x = x + self.dropout(x2)
         x = self.ln3(x)
@@ -111,7 +111,7 @@ class Decoder(nn.Module):
         causal = self.mask[:x.size(1), :x.size(1)].unsqueeze(0).unsqueeze(0)
         comb = causal | tgt_mask
 
-        x = self.embedding(x) * (self.d_model ** 0.5)+ self.pos[:x.size(1), :]
+        x = self.dropout(self.embedding(x) * (self.d_model ** 0.5) + self.pos[:x.size(1), :])
         for block in self.blocks:
             x = block(x, y, src_mask, comb)
         return x
@@ -122,6 +122,11 @@ class Transformer(nn.Module):
         self.enc = Encoder(src_vocab, max_len, d_model, nhead, num_layers, d_ff, dropout)
         self.dec = Decoder(tgt_vocab, max_len, d_model, nhead, num_layers, d_ff, dropout)
         self.fc = nn.Linear(d_model, tgt_vocab)
+
+        # Apply Xavier uniform initialization to parameters
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
 
     def forward(self, src, tgt, src_mask, tgt_mask):
         enc_out = self.enc(src, src_mask)

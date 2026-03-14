@@ -229,7 +229,8 @@ def inference(text, model, tok, max_len, device):
     bos_id = tok.bos_token_id
     eos_id = tok.eos_token_id
     with torch.no_grad():
-        src = torch.tensor(tok.encode(text)[:max_len]).unsqueeze(0).to(device)
+        src_enc = tok.encode(text, add_special_tokens=False)
+        src = torch.tensor([bos_id] + src_enc[:max_len-2] + [eos_id]).unsqueeze(0).to(device)
         src_mask = make_pad_mask(src, tok.pad_token_id)
         enc_out = model.enc(src, src_mask)
         tgt = torch.tensor([[bos_id]]).to(device)

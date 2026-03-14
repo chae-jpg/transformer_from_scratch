@@ -3,16 +3,19 @@ import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
 
-def scaled_dot_product_attention(Q, K, V, mask = None):
+def scaled_dot_product_attention(Q, K, V, mask=None, dropout=None):
     d_k = Q.size(-1)
-    
+
     # QK/d
     score = Q @ K.transpose(-2, -1) / d_k ** 0.5
-    
+
     if mask is not None:
         score = score.masked_fill(mask, float('-inf'))
-    
+
     score = F.softmax(score, dim=-1)
+
+    if dropout is not None:
+        score = dropout(score)
 
     # V
     score = score @ V
@@ -21,7 +24,7 @@ def scaled_dot_product_attention(Q, K, V, mask = None):
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model=512, head=8):
+    def __init__(self, d_model=512, head=8, dropout=0.1):
         super().__init__()
 
         self.d_model = d_model
@@ -32,6 +35,7 @@ class MultiHeadAttention(nn.Module):
         self.W_K = nn.Linear(d_model, d_model)
         self.W_V = nn.Linear(d_model, d_model)
         self.W_O = nn.Linear(d_model, d_model)
+        self.attn_dropout = nn.Dropout(dropout)
 
     def forward(self, Q, K, V, mask=None):
         Q = self.W_Q(Q)
@@ -48,7 +52,7 @@ class MultiHeadAttention(nn.Module):
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
 
-        O = scaled_dot_product_attention(Q, K, V, mask)
+        O = scaled_dot_product_attention(Q, K, V, mask, self.attn_dropout)
         O = O.transpose(1, 2)
         O = O.reshape(B, S, self.d_model)
         O = self.W_O(O)
