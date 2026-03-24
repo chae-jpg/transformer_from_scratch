@@ -123,10 +123,14 @@ class Transformer(nn.Module):
         self.dec = Decoder(tgt_vocab, max_len, d_model, nhead, num_layers, d_ff, dropout)
         self.fc = nn.Linear(d_model, tgt_vocab)
 
-        # Apply Xavier uniform initialization to parameters
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
+        # Initialize parameters properly
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, mean=0.0, std=d_model ** -0.5)
 
     def forward(self, src, tgt, src_mask, tgt_mask):
         enc_out = self.enc(src, src_mask)
