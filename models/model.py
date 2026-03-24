@@ -28,15 +28,15 @@ class EncoderBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, pad_mask):
-        x2 = self.attn(x, x, x, pad_mask)
+        x2 = self.ln1(x)
+        x2 = self.attn(x2, x2, x2, pad_mask)
         x = x + self.dropout(x2)
-        x = self.ln1(x)
 
-        x2 = self.ff1(x)
+        x2 = self.ln2(x)
+        x2 = self.ff1(x2)
         x2 = self.act(x2)
         x2 = self.ff2(x2)
         x = x + self.dropout(x2)
-        x = self.ln2(x)
         return x
 
 class Encoder(nn.Module):
@@ -51,11 +51,12 @@ class Encoder(nn.Module):
         self.register_buffer("pos", pos)
         self.dropout = nn.Dropout(dropout)
         self.d_model = d_model
+        self.ln = nn.LayerNorm(d_model)
     def forward(self, x, pad_mask):
         x = self.dropout(self.embedding(x) * (self.d_model ** 0.5) + self.pos[:x.size(1), :])
         for block in self.blocks:
             x = block(x, pad_mask)
-        
+        x = self.ln(x)
         return x
 
 class DecoderBlock(nn.Module):
@@ -73,24 +74,23 @@ class DecoderBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, y, src_mask, comb_mask):
-        # x: batch_size x seq_len
         # masked multi-head attention
-        x2 = self.attn1(x, x, x, comb_mask)
+        x2 = self.ln1(x)
+        x2 = self.attn1(x2, x2, x2, comb_mask)
         x = x + self.dropout(x2)
-        x = self.ln1(x)
 
         # cross-attention
-        x2 = self.attn2(x, y, y, src_mask)
+        x2 = self.ln2(x)
+        x2 = self.attn2(x2, y, y, src_mask)
         x = x + self.dropout(x2)
-        x = self.ln2(x)
 
         # ff layer
-        x2 = self.ff1(x)
+        x2 = self.ln3(x)
+        x2 = self.ff1(x2)
         x2 = self.act(x2)
         x2 = self.ff2(x2)
         x = x + self.dropout(x2)
-        x = self.ln3(x)
-            
+
         return x
 
 class Decoder(nn.Module):
@@ -107,6 +107,7 @@ class Decoder(nn.Module):
         self.register_buffer("mask", torch.triu(torch.ones(max_len, max_len), diagonal=1).bool())
         self.dropout = nn.Dropout(dropout)
         self.d_model = d_model
+        self.ln = nn.LayerNorm(d_model)
     def forward(self, x, y, src_mask, tgt_mask):
         causal = self.mask[:x.size(1), :x.size(1)].unsqueeze(0).unsqueeze(0)
         comb = causal | tgt_mask
@@ -114,6 +115,7 @@ class Decoder(nn.Module):
         x = self.dropout(self.embedding(x) * (self.d_model ** 0.5) + self.pos[:x.size(1), :])
         for block in self.blocks:
             x = block(x, y, src_mask, comb)
+        x = self.ln(x)
         return x
 
 class Transformer(nn.Module):
